@@ -4,100 +4,132 @@ import (
 	"fmt"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/polynomial"
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
 )
 
 // generateLeafOpeningProofs creates one KZG opening proof
 // for every mapped value stored in a leaf.
 //
-// If the leaf contains:
+// Leaf evaluation points are GLOBAL across the leaf layer.
 //
-//	m0, m1, m2
+// For order = 4:
 //
-// then:
+//	Leaf 0 -> slots 0, 1, 2
+//	Leaf 1 -> slots 3, 4, 5
+//	Leaf 2 -> slots 6, 7, 8
+//	...
+//
+// Only occupied slots are used.
+//
+// Example:
+//
+//	Leaf 0 = [4, 7]
+//
+//	mappedValues      = [m0, m1]
+//	evaluationPoints  = [0, 1]
+//
+// so:
 //
 //	proof[0] proves f(0) = m0
 //	proof[1] proves f(1) = m1
-//	proof[2] proves f(2) = m2
 //
-// No pairing verification is performed here yet.
+// For:
+//
+//	Leaf 1 = [10, 12]
+//
+//	evaluationPoints = [3, 4]
+//
+// so:
+//
+//	proof[0] proves f(3) = m0
+//	proof[1] proves f(4) = m1
+//
+// No pairing verification is performed here.
 func (t *Tree[K, V]) generateLeafOpeningProofs(
 	leaf *node[K, V],
 ) error {
 
 	if leaf == nil {
-		return fmt.Errorf("leaf is nil")
+		return fmt.Errorf(
+			"leaf is nil",
+		)
 	}
 
 	if !leaf.isLeaf {
-		return fmt.Errorf("generateLeafOpeningProofs called on internal node")
+		return fmt.Errorf(
+			"generateLeafOpeningProofs called on internal node",
+		)
 	}
 
 	if leaf.nodeSRS == nil {
-		return fmt.Errorf("leaf has no node SRS")
+		return fmt.Errorf(
+			"leaf has no node SRS",
+		)
 	}
 
 	if len(leaf.mappedValues) == 0 {
-		return fmt.Errorf("leaf has no mapped values")
+		return fmt.Errorf(
+			"leaf has no mapped values",
+		)
 	}
 
-	// ============================================================
-	// Convert mapped values to BN254 field elements.
-	// ============================================================
+	if len(leaf.evaluationPoints) !=
+		len(leaf.mappedValues) {
 
-	evaluations :=
-		make(
-			[]fr.Element,
+		return fmt.Errorf(
+			"leaf has %d mapped values but %d evaluation points",
 			len(leaf.mappedValues),
-		)
-
-	for i, mapped := range leaf.mappedValues {
-
-		if mapped == nil {
-			return fmt.Errorf(
-				"leaf mapped value %d is nil",
-				i,
-			)
-		}
-
-		evaluations[i].SetBigInt(
-			mapped,
+			len(leaf.evaluationPoints),
 		)
 	}
 
 	// ============================================================
-	// Reconstruct the same polynomial used for the commitment:
+	// Reconstruct EXACTLY the same polynomial used
+	// for the leaf commitment.
 	//
-	//     f(0) = m0
-	//     f(1) = m1
-	//     ...
+	// Unlike the old code, we do NOT interpolate at:
+	//
+	//     0, 1, 2, ...
+	//
+	// inside every leaf.
+	//
+	// Instead we use this leaf's global evaluation points.
 	// ============================================================
 
-	poly :=
-		polynomial.InterpolateOnRange(
-			evaluations,
+	coefficients, err :=
+		interpolateAtPoints(
+			leaf.evaluationPoints,
+			leaf.mappedValues,
+			t.modulus,
 		)
 
-	coefficients :=
-		[]fr.Element(poly)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to interpolate leaf polynomial for opening proofs: %w",
+			err,
+		)
+	}
 
 	// ============================================================
-	// Generate one KZG opening proof at each evaluation point.
+	// Generate one KZG opening proof at each GLOBAL
+	// evaluation point.
 	// ============================================================
 
 	leaf.openingProofs =
 		make(
 			[]kzg.OpeningProof,
-			len(evaluations),
+			len(leaf.mappedValues),
 		)
 
-	for i := range evaluations {
+	for i := range leaf.mappedValues {
+
+		evaluationPoint :=
+			leaf.evaluationPoints[i]
 
 		var point fr.Element
 
 		point.SetUint64(
-			uint64(i),
+			evaluationPoint,
 		)
 
 		proof, err :=
@@ -109,8 +141,8 @@ func (t *Tree[K, V]) generateLeafOpeningProofs(
 
 		if err != nil {
 			return fmt.Errorf(
-				"failed to generate KZG opening proof at point %d: %w",
-				i,
+				"failed to generate KZG opening proof at global evaluation point %d: %w",
+				evaluationPoint,
 				err,
 			)
 		}
@@ -119,7 +151,8 @@ func (t *Tree[K, V]) generateLeafOpeningProofs(
 			proof
 	}
 
-	// We have generated proofs, but have NOT verified them yet.
+	// Proofs have been generated,
+	// but they have NOT yet been verified.
 	leaf.pairingsVerified = false
 
 	return nil

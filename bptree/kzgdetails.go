@@ -5,33 +5,45 @@ import (
 	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/polynomial"
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
 )
 
-// PrintKZGDetails prints all KZG-related information
+// PrintKZGDetails prints detailed KZG information
 // for every leaf.
 //
-// Each leaf has its OWN independently generated SRS.
+// Each leaf has:
+//
+//   - its own entries
+//   - global evaluation points
+//   - mapped field values
+//   - interpolating polynomial
+//   - independently generated SRS
+//   - one final KZG commitment
+//   - opening proofs
+//   - pairing verification
 func (t *Tree[K, V]) PrintKZGDetails() error {
 
 	if t.root == nil {
-		return fmt.Errorf("tree has no root")
+		return fmt.Errorf(
+			"tree has no root",
+		)
 	}
 
 	fmt.Println()
 	fmt.Println("================================================================")
-	fmt.Println("KZG DETAILS")
+	fmt.Println("LEAF KZG DETAILS")
 	fmt.Println("================================================================")
 
 	fmt.Println()
-	fmt.Println("Field modulus p:")
+	fmt.Println("BN254 scalar-field modulus p:")
 	fmt.Println(t.modulus.String())
 
 	leafNumber := 0
 
-	// Special case: tree consists of only one leaf.
+	// Special case:
+	// the complete tree consists of one leaf.
 	if t.root.isLeaf {
+
 		return t.printSingleLeafKZGDetails(
 			t.root,
 			nil,
@@ -46,20 +58,23 @@ func (t *Tree[K, V]) PrintKZGDetails() error {
 	)
 }
 
-// printKZGDetailsRecursive traverses the tree and prints
-// information for every leaf.
+// printKZGDetailsRecursive traverses the tree from left to right
+// and prints information for every leaf.
 func (t *Tree[K, V]) printKZGDetailsRecursive(
 	parent *node[K, V],
 	leafNumber *int,
 ) error {
 
-	if parent == nil || parent.isLeaf {
+	if parent == nil ||
+		parent.isLeaf {
+
 		return nil
 	}
 
 	for childIndex, child := range parent.children {
 
 		if child == nil {
+
 			return fmt.Errorf(
 				"nil child at index %d",
 				childIndex,
@@ -68,22 +83,26 @@ func (t *Tree[K, V]) printKZGDetailsRecursive(
 
 		if child.isLeaf {
 
-			if err := t.printSingleLeafKZGDetails(
-				child,
-				parent,
-				childIndex,
-				leafNumber,
-			); err != nil {
+			if err :=
+				t.printSingleLeafKZGDetails(
+					child,
+					parent,
+					childIndex,
+					leafNumber,
+				); err != nil {
+
 				return err
 			}
 
 			continue
 		}
 
-		if err := t.printKZGDetailsRecursive(
-			child,
-			leafNumber,
-		); err != nil {
+		if err :=
+			t.printKZGDetailsRecursive(
+				child,
+				leafNumber,
+			); err != nil {
+
 			return err
 		}
 	}
@@ -101,36 +120,65 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 ) error {
 
 	if leaf == nil {
+
 		return fmt.Errorf(
 			"nil leaf encountered",
 		)
 	}
 
 	if !leaf.isLeaf {
+
 		return fmt.Errorf(
 			"printSingleLeafKZGDetails called on internal node",
 		)
 	}
 
 	if len(leaf.entries) == 0 {
+
 		return fmt.Errorf(
 			"cannot print KZG details for empty leaf",
 		)
 	}
 
-	if len(leaf.entries) != len(leaf.mappedValues) {
+	if len(leaf.entries) !=
+		len(leaf.mappedValues) {
+
 		return fmt.Errorf(
-			"leaf entry/mapped-value length mismatch",
+			"leaf %d entry/mapped-value length mismatch",
+			*leafNumber,
 		)
 	}
 
-	// Every leaf must have its own SRS.
-	if leaf.leafSRS == nil {
+	if len(leaf.entries) !=
+		len(leaf.evaluationPoints) {
+
+		return fmt.Errorf(
+			"leaf %d has %d entries but %d evaluation points",
+			*leafNumber,
+			len(leaf.entries),
+			len(leaf.evaluationPoints),
+		)
+	}
+
+	if leaf.nodeSRS == nil {
+
 		return fmt.Errorf(
 			"leaf %d has no KZG SRS",
 			*leafNumber,
 		)
 	}
+
+	if leaf.commitment == nil {
+
+		return fmt.Errorf(
+			"leaf %d has no KZG commitment",
+			*leafNumber,
+		)
+	}
+
+	// ============================================================
+	// LEAF HEADER
+	// ============================================================
 
 	fmt.Println()
 	fmt.Println("================================================================")
@@ -138,7 +186,234 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	fmt.Println("================================================================")
 
 	// ============================================================
-	// LEAF'S OWN SRS
+	// LEAF ENTRIES
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("Leaf entries:")
+
+	for i, entry := range leaf.entries {
+
+		fmt.Printf(
+			"  entry[%d]: key = %v\n",
+			i,
+			entry.Key,
+		)
+	}
+
+	// ============================================================
+	// GLOBAL EVALUATION POINTS + MAPPED VALUES
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("Global evaluation points and mapped values:")
+
+	for i, entry := range leaf.entries {
+
+		fmt.Printf(
+			"\n  Element %d\n",
+			i,
+		)
+
+		fmt.Printf(
+			"    key                = %v\n",
+			entry.Key,
+		)
+
+		fmt.Printf(
+			"    H(key)             = %x\n",
+			entry.Value,
+		)
+
+		fmt.Printf(
+			"    global point z_%d  = %d\n",
+			i,
+			leaf.evaluationPoints[i],
+		)
+
+		fmt.Printf(
+			"    mapped value m_%d  = %s\n",
+			i,
+			leaf.mappedValues[i].String(),
+		)
+	}
+
+	// ============================================================
+	// RECONSTRUCT THE EXACT LEAF POLYNOMIAL
+	//
+	// IMPORTANT:
+	//
+	// Leaves use GLOBAL evaluation points.
+	//
+	//     f(z_i) = m_i
+	//
+	// where z_i is the global slot assigned to the entry.
+	// ============================================================
+
+	coefficients, err :=
+		interpolateAtPoints(
+			leaf.evaluationPoints,
+			leaf.mappedValues,
+			t.modulus,
+		)
+
+	if err != nil {
+
+		return fmt.Errorf(
+			"failed to reconstruct polynomial for leaf %d: %w",
+			*leafNumber,
+			err,
+		)
+	}
+
+	// ============================================================
+	// POLYNOMIAL: EVALUATION FORM
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("----------------------------------------------------------------")
+	fmt.Println("INTERPOLATING POLYNOMIAL")
+	fmt.Println("----------------------------------------------------------------")
+
+	fmt.Printf(
+		"Degree <= %d\n",
+		len(coefficients)-1,
+	)
+
+	fmt.Println()
+	fmt.Println("Evaluation form:")
+
+	for i := range leaf.mappedValues {
+
+		fmt.Printf(
+			"  f_%d(%d) = %s\n",
+			*leafNumber,
+			leaf.evaluationPoints[i],
+			leaf.mappedValues[i].String(),
+		)
+	}
+
+	// ============================================================
+	// POLYNOMIAL: COEFFICIENT FORM
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("Coefficient form:")
+
+	for i := range coefficients {
+
+		var coefficientBig big.Int
+
+		coefficients[i].BigInt(
+			&coefficientBig,
+		)
+
+		fmt.Printf(
+			"  a_%d = %s\n",
+			i,
+			coefficientBig.String(),
+		)
+
+		fmt.Printf(
+			"        0x%s\n",
+			coefficientBig.Text(16),
+		)
+	}
+
+	fmt.Println()
+
+	fmt.Printf(
+		"f_%d(X) = ",
+		*leafNumber,
+	)
+
+	for i := range coefficients {
+
+		var coefficientBig big.Int
+
+		coefficients[i].BigInt(
+			&coefficientBig,
+		)
+
+		if i > 0 {
+			fmt.Print(" + ")
+		}
+
+		switch i {
+
+		case 0:
+
+			fmt.Printf(
+				"%s",
+				coefficientBig.String(),
+			)
+
+		case 1:
+
+			fmt.Printf(
+				"%s X",
+				coefficientBig.String(),
+			)
+
+		default:
+
+			fmt.Printf(
+				"%s X^%d",
+				coefficientBig.String(),
+				i,
+			)
+		}
+	}
+
+	fmt.Println()
+
+	// ============================================================
+	// VERIFY THAT THE POLYNOMIAL EVALUATES CORRECTLY
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("Polynomial evaluation checks:")
+
+	for i := range leaf.evaluationPoints {
+
+		var x fr.Element
+
+		x.SetUint64(
+			leaf.evaluationPoints[i],
+		)
+
+		evaluated :=
+			evaluatePolynomial(
+				coefficients,
+				x,
+			)
+
+		var evaluatedBig big.Int
+
+		evaluated.BigInt(
+			&evaluatedBig,
+		)
+
+		expected :=
+			leaf.mappedValues[i]
+
+		match :=
+			evaluatedBig.Cmp(
+				expected,
+			) == 0
+
+		fmt.Printf(
+			"  f_%d(%d) = %s, expected = %s, match = %v\n",
+			*leafNumber,
+			leaf.evaluationPoints[i],
+			evaluatedBig.String(),
+			expected.String(),
+			match,
+		)
+	}
+
+	// ============================================================
+	// LEAF SRS
 	// ============================================================
 
 	fmt.Println()
@@ -148,15 +423,16 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 
 	fmt.Printf(
 		"Number of G1 proving-key powers: %d\n",
-		len(leaf.leafSRS.Pk.G1),
+		len(leaf.nodeSRS.Pk.G1),
 	)
 
 	fmt.Println()
 	fmt.Println("Proving-key G1 powers:")
 
-	for i := range leaf.leafSRS.Pk.G1 {
+	for i := range leaf.nodeSRS.Pk.G1 {
 
-		b := leaf.leafSRS.Pk.G1[i].Bytes()
+		b :=
+			leaf.nodeSRS.Pk.G1[i].Bytes()
 
 		fmt.Printf(
 			"  SRS_leaf_%d[%d] = [tau_%d^%d]G1\n",
@@ -176,7 +452,7 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	fmt.Println("Verifying-key G1:")
 
 	vkG1 :=
-		leaf.leafSRS.Vk.G1.Bytes()
+		leaf.nodeSRS.Vk.G1.Bytes()
 
 	fmt.Printf(
 		"  %x\n",
@@ -186,10 +462,10 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	fmt.Println()
 	fmt.Println("Verifying-key G2 points:")
 
-	for i := range leaf.leafSRS.Vk.G2 {
+	for i := range leaf.nodeSRS.Vk.G2 {
 
 		b :=
-			leaf.leafSRS.Vk.G2[i].Bytes()
+			leaf.nodeSRS.Vk.G2[i].Bytes()
 
 		fmt.Printf(
 			"  VK.G2[%d] = %x\n",
@@ -199,6 +475,7 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	}
 
 	fmt.Println()
+
 	fmt.Printf(
 		"Leaf %d uses its own independently generated trapdoor tau_%d.\n",
 		*leafNumber,
@@ -210,179 +487,27 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	)
 
 	// ============================================================
-	// CONVERT MAPPED VALUES TO FIELD ELEMENTS
-	// ============================================================
-
-	values := make(
-		[]fr.Element,
-		len(leaf.mappedValues),
-	)
-
-	for i, mapped := range leaf.mappedValues {
-
-		if mapped == nil {
-			return fmt.Errorf(
-				"nil mapped value at leaf %d position %d",
-				*leafNumber,
-				i,
-			)
-		}
-
-		values[i].SetBigInt(mapped)
-	}
-
-	// ============================================================
-	// LEAF ENTRIES
-	// ============================================================
-
-	fmt.Println()
-	fmt.Println("Leaf entries and mapped field elements:")
-
-	for i, entry := range leaf.entries {
-
-		fmt.Printf("\n  Element %d\n", i)
-
-		fmt.Printf(
-			"    key                = %v\n",
-			entry.Key,
-		)
-
-		fmt.Printf(
-			"    H(key)             = %x\n",
-			entry.Value,
-		)
-
-		fmt.Printf(
-			"    evaluation point   = %d\n",
-			i,
-		)
-
-		fmt.Printf(
-			"    mapped m_%d         = %s\n",
-			i,
-			leaf.mappedValues[i].String(),
-		)
-
-		// --------------------------------------------------------
-		// Individual commitment to the mapped element.
-		//
-		// Constant polynomial:
-		//
-		//     g_i(X) = m_i
-		//
-		// Uses THIS leaf's SRS.
-		// --------------------------------------------------------
-
-		elementPoly := []fr.Element{
-			values[i],
-		}
-
-		elementCommitment, err :=
-			kzg.Commit(
-				elementPoly,
-				leaf.leafSRS.Pk,
-			)
-
-		if err != nil {
-			return fmt.Errorf(
-				"failed element commitment for leaf %d element %d: %w",
-				*leafNumber,
-				i,
-				err,
-			)
-		}
-
-		elementBytes :=
-			elementCommitment.Bytes()
-
-		fmt.Printf(
-			"    element commitment = %x\n",
-			elementBytes,
-		)
-	}
-
-	// ============================================================
-	// INTERPOLATING POLYNOMIAL
-	// ============================================================
-
-	poly :=
-		polynomial.InterpolateOnRange(
-			values,
-		)
-
-	coefficients :=
-		[]fr.Element(poly)
-
-	fmt.Println()
-	fmt.Println("Interpolating polynomial:")
-
-	fmt.Printf(
-		"  degree <= %d\n",
-		len(coefficients)-1,
-	)
-
-	fmt.Println()
-	fmt.Println("  Evaluation form:")
-
-	for i, mapped := range leaf.mappedValues {
-
-		fmt.Printf(
-			"    f_%d(%d) = %s\n",
-			*leafNumber,
-			i,
-			mapped.String(),
-		)
-	}
-
-	// ============================================================
-	// COEFFICIENTS
-	// ============================================================
-
-	fmt.Println()
-	fmt.Println("  Coefficient form:")
-
-	for i := range coefficients {
-
-		var coefficientBig big.Int
-
-		coefficients[i].BigInt(
-			&coefficientBig,
-		)
-
-		fmt.Printf(
-			"    a_%d = %s\n",
-			i,
-			coefficientBig.String(),
-		)
-
-		fmt.Printf(
-			"          0x%s\n",
-			coefficientBig.Text(16),
-		)
-	}
-
-	// ============================================================
-	// SRS POWERS USED BY THIS POLYNOMIAL
+	// SRS POWERS USED BY THE POLYNOMIAL
 	// ============================================================
 
 	if len(coefficients) >
-		len(leaf.leafSRS.Pk.G1) {
+		len(leaf.nodeSRS.Pk.G1) {
 
 		return fmt.Errorf(
 			"leaf %d requires %d SRS powers but its SRS has only %d",
 			*leafNumber,
 			len(coefficients),
-			len(leaf.leafSRS.Pk.G1),
+			len(leaf.nodeSRS.Pk.G1),
 		)
 	}
 
 	fmt.Println()
-	fmt.Println("SRS points actually used by this leaf polynomial:")
+	fmt.Println("SRS powers used by this polynomial:")
 
 	for i := range coefficients {
 
 		srsBytes :=
-			leaf.leafSRS.Pk.G1[i].Bytes()
+			leaf.nodeSRS.Pk.G1[i].Bytes()
 
 		fmt.Printf(
 			"  [tau_%d^%d]G1 = %x\n",
@@ -400,7 +525,7 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	fmt.Println("Coefficient KZG contributions:")
 
 	fmt.Printf(
-		"  C_leaf_%d = Σ a_i [tau_%d^i]G1\n",
+		"  C_leaf_%d = sum_i a_i [tau_%d^i]G1\n",
 		*leafNumber,
 		*leafNumber,
 	)
@@ -416,7 +541,7 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 		var contribution kzg.Digest
 
 		contribution.ScalarMultiplication(
-			&leaf.leafSRS.Pk.G1[i],
+			&leaf.nodeSRS.Pk.G1[i],
 			&coefficientBig,
 		)
 
@@ -433,16 +558,17 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 	}
 
 	// ============================================================
-	// FINAL LEAF COMMITMENT
+	// RECOMPUTE FINAL LEAF COMMITMENT
 	// ============================================================
 
-	leafCommitment, err :=
+	recomputedCommitment, err :=
 		kzg.Commit(
 			coefficients,
-			leaf.leafSRS.Pk,
+			leaf.nodeSRS.Pk,
 		)
 
 	if err != nil {
+
 		return fmt.Errorf(
 			"failed to recompute leaf %d commitment: %w",
 			*leafNumber,
@@ -450,47 +576,272 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 		)
 	}
 
-	leafCommitmentBytes :=
-		leafCommitment.Bytes()
+	recomputedBytes :=
+		recomputedCommitment.Bytes()
+
+	storedBytes :=
+		leaf.commitment.Bytes()
 
 	fmt.Println()
-	fmt.Println("Final leaf KZG commitment:")
+	fmt.Println("----------------------------------------------------------------")
+	fmt.Println("FINAL LEAF KZG COMMITMENT")
+	fmt.Println("----------------------------------------------------------------")
 
 	fmt.Printf(
-		"  C_leaf_%d = %x\n",
+		"  recomputed C_leaf_%d = %x\n",
 		*leafNumber,
-		leafCommitmentBytes,
+		recomputedBytes,
+	)
+
+	fmt.Printf(
+		"  stored     C_leaf_%d = %x\n",
+		*leafNumber,
+		storedBytes,
+	)
+
+	commitmentMatches :=
+		leaf.commitment.Equal(
+			&recomputedCommitment,
+		)
+
+	fmt.Printf(
+		"  stored == recomputed = %v\n",
+		commitmentMatches,
 	)
 
 	// ============================================================
-	// PARENT LPC / RPC
+	// OPENING PROOFS AND PAIRING VERIFICATION
+	// ============================================================
+
+	if len(leaf.openingProofs) !=
+		len(leaf.mappedValues) {
+
+		return fmt.Errorf(
+			"leaf %d has %d mapped values but %d opening proofs",
+			*leafNumber,
+			len(leaf.mappedValues),
+			len(leaf.openingProofs),
+		)
+	}
+
+	fmt.Println()
+	fmt.Println("----------------------------------------------------------------")
+	fmt.Println("KZG OPENING PROOFS AND PAIRING VERIFICATION")
+	fmt.Println("----------------------------------------------------------------")
+
+	for i := range leaf.openingProofs {
+
+		proof :=
+			&leaf.openingProofs[i]
+
+		evaluationPoint :=
+			leaf.evaluationPoints[i]
+
+		// Convert the global evaluation point into
+		// a BN254 scalar-field element.
+		var point fr.Element
+
+		point.SetUint64(
+			evaluationPoint,
+		)
+
+		// Expected mapped value.
+		var expectedElement fr.Element
+
+		expectedElement.SetBigInt(
+			leaf.mappedValues[i],
+		)
+
+		// Claimed value contained in the opening proof.
+		var claimedBig big.Int
+
+		proof.ClaimedValue.BigInt(
+			&claimedBig,
+		)
+
+		claimedMatches :=
+			proof.ClaimedValue.Equal(
+				&expectedElement,
+			)
+
+		proofBytes :=
+			proof.H.Bytes()
+
+		fmt.Println()
+		fmt.Println("............................................................")
+
+		fmt.Printf(
+			"OPENING %d\n",
+			i,
+		)
+
+		fmt.Println("............................................................")
+
+		fmt.Printf(
+			"  key                        = %v\n",
+			leaf.entries[i].Key,
+		)
+
+		fmt.Printf(
+			"  global evaluation point z = %d\n",
+			evaluationPoint,
+		)
+
+		fmt.Printf(
+			"  expected mapped value y    = %s\n",
+			leaf.mappedValues[i].String(),
+		)
+
+		fmt.Printf(
+			"  proof claimed value        = %s\n",
+			claimedBig.String(),
+		)
+
+		fmt.Printf(
+			"  claimed value == expected  = %v\n",
+			claimedMatches,
+		)
+
+		fmt.Printf(
+			"  opening proof pi            = %x\n",
+			proofBytes,
+		)
+
+		// ========================================================
+		// PAIRING EQUATION
+		// ========================================================
+
+		fmt.Println()
+		fmt.Println("  KZG pairing equation:")
+		fmt.Println()
+
+		fmt.Println(
+			"    e(C - yG1, G2)",
+		)
+
+		fmt.Println(
+			"           =",
+		)
+
+		fmt.Println(
+			"    e(pi, [tau]G2 - zG2)",
+		)
+
+		fmt.Println()
+
+		fmt.Printf(
+			"    z  = %d\n",
+			evaluationPoint,
+		)
+
+		fmt.Printf(
+			"    y  = %s\n",
+			leaf.mappedValues[i].String(),
+		)
+
+		fmt.Printf(
+			"    C  = %x\n",
+			storedBytes,
+		)
+
+		fmt.Printf(
+			"    pi = %x\n",
+			proofBytes,
+		)
+
+		// ========================================================
+		// VERIFICATION KEY
+		// ========================================================
+
+		fmt.Println()
+		fmt.Println("  Verification-key G2 elements:")
+
+		for j := range leaf.nodeSRS.Vk.G2 {
+
+			g2Bytes :=
+				leaf.nodeSRS.Vk.G2[j].Bytes()
+
+			fmt.Printf(
+				"    VK.G2[%d] = %x\n",
+				j,
+				g2Bytes,
+			)
+		}
+
+		// ========================================================
+		// ACTUAL PAIRING VERIFICATION
+		// ========================================================
+
+		verifyErr :=
+			kzg.Verify(
+				leaf.commitment,
+				proof,
+				point,
+				leaf.nodeSRS.Vk,
+			)
+
+		fmt.Println()
+		fmt.Print(
+			"  Pairing verification: ",
+		)
+
+		if verifyErr != nil {
+
+			fmt.Println(
+				"FAILED",
+			)
+
+			return fmt.Errorf(
+				"leaf %d opening %d failed KZG pairing verification at global evaluation point %d: %w",
+				*leafNumber,
+				i,
+				evaluationPoint,
+				verifyErr,
+			)
+		}
+
+		fmt.Println(
+			"PASSED",
+		)
+	}
+
+	fmt.Println()
+	fmt.Printf(
+		"Leaf %d: all %d KZG opening pairings PASSED\n",
+		*leafNumber,
+		len(leaf.openingProofs),
+	)
+
+	// ============================================================
+	// PARENT LPC / RPC INTERPRETATION
 	// ============================================================
 
 	if parent != nil {
 
 		fmt.Println()
-		fmt.Println("Parent-pointer interpretation:")
+		fmt.Println("----------------------------------------------------------------")
+		fmt.Println("PARENT LPC / RPC INTERPRETATION")
+		fmt.Println("----------------------------------------------------------------")
 
 		fmt.Printf(
-			"  child index = %d\n",
+			"child index = %d\n",
 			childIndex,
 		)
 
-		// child[i] corresponds to LPC[i].
-		if childIndex < len(parent.keys) {
+		if childIndex <
+			len(parent.keys) {
 
 			fmt.Printf(
-				"  LPC[%d] for separator key %v\n",
+				"  This commitment is LPC[%d] for separator key %v\n",
 				childIndex,
 				parent.keys[childIndex],
 			)
 		}
 
-		// child[i] also corresponds to RPC[i-1].
 		if childIndex > 0 {
 
 			fmt.Printf(
-				"  RPC[%d] for separator key %v\n",
+				"  This commitment is RPC[%d] for separator key %v\n",
 				childIndex-1,
 				parent.keys[childIndex-1],
 			)
@@ -500,37 +851,82 @@ func (t *Tree[K, V]) printSingleLeafKZGDetails(
 			len(parent.childCommitments) &&
 			parent.childCommitments[childIndex] != nil {
 
-			stored :=
+			storedParent :=
 				parent.childCommitments[childIndex]
 
-			storedBytes :=
-				stored.Bytes()
+			storedParentBytes :=
+				storedParent.Bytes()
 
 			fmt.Printf(
-				"  stored parent commitment = %x\n",
-				storedBytes,
+				"  parent-stored commitment = %x\n",
+				storedParentBytes,
 			)
 
 			equal :=
-				stored.Equal(
-					&leafCommitment,
+				storedParent.Equal(
+					&recomputedCommitment,
 				)
 
 			fmt.Printf(
-				"  stored == recomputed     = %v\n",
+				"  parent stored == leaf commitment = %v\n",
 				equal,
 			)
 
 		} else {
 
 			fmt.Println(
-				"  stored parent commitment = <missing>",
+				"  parent-stored commitment = <missing>",
 			)
 		}
 	}
+
+	// ============================================================
+	// COMPLETE LEAF
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("================================================================")
+
+	fmt.Printf(
+		"END LEAF %d\n",
+		*leafNumber,
+	)
+
+	fmt.Println("================================================================")
 
 	*leafNumber =
 		*leafNumber + 1
 
 	return nil
+}
+
+// evaluatePolynomial evaluates:
+//
+//	f(X) = a_0 + a_1 X + ... + a_n X^n
+//
+// using Horner's rule.
+func evaluatePolynomial(
+	coefficients []fr.Element,
+	x fr.Element,
+) fr.Element {
+
+	var result fr.Element
+
+	result.SetZero()
+
+	for i :=
+		len(coefficients) - 1; i >= 0; i-- {
+
+		result.Mul(
+			&result,
+			&x,
+		)
+
+		result.Add(
+			&result,
+			&coefficients[i],
+		)
+	}
+
+	return result
 }

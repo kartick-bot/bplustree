@@ -21,6 +21,13 @@ func intComparator(a, b int) int {
 func main() {
 
 	// ============================================================
+	// TREE PARAMETERS
+	// ============================================================
+
+	const order = 4
+	const numberOfKeys = 16
+
+	// ============================================================
 	// CREATE TREE
 	// ============================================================
 
@@ -30,7 +37,7 @@ func main() {
 	// maximum keys per internal node     = 3
 	// maximum entries per leaf           = 3
 	tree, err := bptree.New[int, string](
-		4,
+		order,
 		intComparator,
 		bptree.HashInt,
 		bptree.MapIntEntryToField,
@@ -47,32 +54,45 @@ func main() {
 
 	used := make(map[int]bool)
 
-	fmt.Println("Randomly generated keys:")
+	insertedKeys :=
+		make(
+			[]int,
+			0,
+			numberOfKeys,
+		)
 
-	for len(used) < 16 {
+	for len(used) < numberOfKeys {
 
 		// Random key in [10, 100].
 		key := rand.Intn(91) + 10
 
-		// Prevent duplicate generated keys.
 		if used[key] {
 			continue
 		}
 
 		used[key] = true
 
-		// Insert key.
-		//
-		// Internally:
-		//
-		// value = H(key)
-		//
-		// mapped =
-		// H(domain || key || value) mod p
 		if err := tree.Insert(key); err != nil {
 			panic(err)
 		}
 
+		insertedKeys =
+			append(
+				insertedKeys,
+				key,
+			)
+	}
+
+	// ============================================================
+	// PRINT INPUT KEYS
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("INPUT KEYS")
+	fmt.Println("============================================================")
+
+	for _, key := range insertedKeys {
 		fmt.Printf("%d ", key)
 	}
 
@@ -80,10 +100,38 @@ func main() {
 	fmt.Println()
 
 	// ============================================================
-	// VALIDATE TREE BEFORE COMMITMENTS
+	// PRINT TREE ORDER
+	// ============================================================
+
+	fmt.Println("============================================================")
+	fmt.Println("B+ TREE PARAMETERS")
+	fmt.Println("============================================================")
+
+	fmt.Printf("Order = %d\n", order)
+
+	fmt.Printf(
+		"Maximum internal-node keys = %d\n",
+		order-1,
+	)
+
+	fmt.Printf(
+		"Maximum children per internal node = %d\n",
+		order,
+	)
+
+	fmt.Printf(
+		"Maximum entries per leaf = %d\n",
+		order-1,
+	)
+
+	fmt.Println()
+
+	// ============================================================
+	// VALIDATE TREE STRUCTURE
 	// ============================================================
 
 	if err := tree.Validate(); err != nil {
+
 		panic(
 			fmt.Sprintf(
 				"B+ tree validation failed before KZG commitments: %v",
@@ -93,76 +141,110 @@ func main() {
 	}
 
 	// ============================================================
-	// BUILD LEAF KZG COMMITMENTS
+	// PRINT COMPLETE B+ TREE
 	// ============================================================
 
-	// This MUST happen before PrintLeafCommitments()
-	// or PrintKZGDetails().
+	fmt.Println("============================================================")
+	fmt.Println("B+ TREE")
+	fmt.Println("============================================================")
+
+	tree.PrintPretty()
+
+	fmt.Println()
+
+	// ============================================================
+	// BUILD ALL KZG COMMITMENTS AND OPENING PROOFS
+	// ============================================================
+
+	// This recursively:
+	//
+	// 1. assigns global leaf evaluation points
+	// 2. interpolates leaf polynomials
+	// 3. creates leaf commitments
+	// 4. generates leaf opening proofs
+	// 5. verifies leaf pairings
+	// 6. constructs internal-node mapped values
+	// 7. interpolates internal-node polynomials
+	// 8. creates internal-node commitments
+	// 9. generates internal opening proofs
+	// 10. verifies internal-node pairings
 	if err := tree.BuildCommitments(); err != nil {
 		panic(err)
 	}
-	if err := tree.PrintLeafOpeningProofs(); err != nil {
-		panic(err)
-	}
-	if err := tree.PrintInternalCommitmentDetails(); err != nil {
-		panic(err)
-	}
 
 	// ============================================================
-	// PRINT B+ TREE
+	// LEAF DETAILS
 	// ============================================================
 
-	fmt.Println("B+ Tree:")
-	tree.PrintPretty()
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("LEAF NODE DETAILS")
+	fmt.Println("============================================================")
 
-	// ============================================================
-	// PRINT LEAF DATA
-	// ============================================================
-
-	// Shows:
+	// PrintKZGDetails() now prints the COMPLETE information
+	// for each leaf before moving to the next leaf.
 	//
-	// key
-	// H(key)
-	// mapped value in Z_p
-	tree.PrintLeafData()
-
-	// ============================================================
-	// PRINT LPC / RPC COMMITMENTS
-	// ============================================================
-
-	// Shows commitments associated with each child pointer.
+	// For every leaf:
 	//
-	// For separator i:
+	// 1. keys
+	// 2. H(key)
+	// 3. global evaluation points
+	// 4. mapped field values
+	// 5. interpolating polynomial
+	// 6. polynomial evaluation checks
+	// 7. SRS
+	// 8. coefficient contributions
+	// 9. final KZG commitment
+	// 10. opening proofs
+	// 11. pairing equations
+	// 12. pairing verification
+	// 13. parent LPC/RPC interpretation
 	//
-	// LPC[i] = childCommitments[i]
-	// RPC[i] = childCommitments[i+1]
+	// Thus:
 	//
-	// Therefore:
+	// LEAF 0
+	//   all details
 	//
-	// LPC[i] = RPC[i-1]
-	tree.PrintLeafCommitments()
-
-	// ============================================================
-	// PRINT DETAILED KZG INFORMATION
-	// ============================================================
-
-	// Shows:
+	// LEAF 1
+	//   all details
 	//
-	// mapped values
-	// element commitments
-	// polynomial evaluations
-	// polynomial coefficients
-	// SRS points
-	// coefficient contributions
-	// final leaf commitment
-	// LPC/RPC parent mapping
+	// ...
 	if err := tree.PrintKZGDetails(); err != nil {
+		panic(err)
+	}
+
+	// ============================================================
+	// INTERNAL NODE DETAILS
+	// ============================================================
+
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("INTERNAL NODE DETAILS")
+	fmt.Println("============================================================")
+
+	// For each internal node:
+	//
+	// separator keys
+	// LPC
+	// RPC
+	// mapped values
+	// polynomial
+	// SRS
+	// commitment
+	// opening proofs
+	// pairing verification
+	if err := tree.PrintInternalCommitmentDetails(); err != nil {
 		panic(err)
 	}
 
 	// ============================================================
 	// FINAL VALIDATION
 	// ============================================================
+
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("FINAL VALIDATION")
+	fmt.Println("============================================================")
 
 	fmt.Println()
 	fmt.Println("Validating B+ tree...")
@@ -176,6 +258,7 @@ func main() {
 
 		fmt.Println("B+ tree validation PASSED")
 	}
+
 	fmt.Println()
 	fmt.Println("Validating recursive KZG commitments...")
 

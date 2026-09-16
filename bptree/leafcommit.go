@@ -78,6 +78,12 @@ func (t *Tree[K, V]) ensureNodeSRS(
 //	...
 //
 // and produces one KZG commitment using this node's SRS.
+//
+// IMPORTANT:
+// This helper is still used for INTERNAL NODES.
+//
+// Leaves now use interpolateAtPoints() because their evaluation
+// points are global positions across the leaf layer.
 func (t *Tree[K, V]) commitFieldValues(
 	values []*big.Int,
 	srs *kzg.SRS,
@@ -137,6 +143,10 @@ func (t *Tree[K, V]) commitFieldValues(
 	// Interpolate:
 	//
 	//     f(i) = fieldValues[i]
+	//
+	// Internal nodes continue to use local points:
+	//
+	//     0, 1, 2, ...
 	// ------------------------------------------------------------
 
 	poly :=
@@ -170,6 +180,18 @@ func (t *Tree[K, V]) commitFieldValues(
 // BuildCommitments recursively computes commitments
 // from the leaves all the way to the root.
 //
+// Before commitment construction, every leaf receives
+// its global evaluation points.
+//
+// For order = 4:
+//
+//	Leaf 0 -> slots 0, 1, 2
+//	Leaf 1 -> slots 3, 4, 5
+//	Leaf 2 -> slots 6, 7, 8
+//	...
+//
+// Only occupied slots are stored.
+//
 // After this finishes:
 //
 //	t.root.commitment
@@ -180,6 +202,20 @@ func (t *Tree[K, V]) BuildCommitments() error {
 	if t.root == nil {
 		return fmt.Errorf(
 			"cannot build commitments for empty tree",
+		)
+	}
+
+	// ------------------------------------------------------------
+	// Assign global leaf evaluation points BEFORE any
+	// leaf polynomial is constructed.
+	// ------------------------------------------------------------
+
+	if err :=
+		t.assignLeafEvaluationPoints(); err != nil {
+
+		return fmt.Errorf(
+			"failed to assign leaf evaluation points: %w",
+			err,
 		)
 	}
 
@@ -199,6 +235,9 @@ func (t *Tree[K, V]) BuildCommitments() error {
 //	     |
 //	     v
 //	mapped values
+//	     |
+//	     v
+//	global evaluation points
 //	     |
 //	     v
 //	polynomial
@@ -263,31 +302,87 @@ func (t *Tree[K, V]) commitNode(
 			)
 		}
 
-		commitment, err :=
-			t.commitFieldValues(
+		if len(n.evaluationPoints) !=
+			len(n.mappedValues) {
+
+			return nil, fmt.Errorf(
+				"leaf has %d mapped values but %d evaluation points",
+				len(n.mappedValues),
+				len(n.evaluationPoints),
+			)
+		}
+
+		// ------------------------------------------------------------
+		// Interpolate the leaf polynomial using its GLOBAL
+		// evaluation points.
+		//
+		// Example for order = 4:
+		//
+		//     Leaf 0:
+		//
+		//         entries = [4, 7]
+		//         points  = [0, 1]
+		//
+		//     Leaf 1:
+		//
+		//         entries = [10, 12]
+		//         points  = [3, 4]
+		//
+		//     Leaf 2:
+		//
+		//         entries = [15, 18]
+		//         points  = [6, 7]
+		//
+		// Each leaf reserves exactly order-1 slots.
+		// ------------------------------------------------------------
+
+		coefficients, err :=
+			interpolateAtPoints(
+				n.evaluationPoints,
 				n.mappedValues,
-				n.nodeSRS,
+				t.modulus,
 			)
 
 		if err != nil {
 			return nil, fmt.Errorf(
-				"failed to commit leaf: %w",
+				"failed to interpolate leaf polynomial: %w",
 				err,
 			)
 		}
+
+		// ------------------------------------------------------------
+		// Commit to the leaf polynomial.
+		// ------------------------------------------------------------
+
+		digest, err :=
+			kzg.Commit(
+				coefficients,
+				n.nodeSRS.Pk,
+			)
+
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to commit leaf polynomial: %w",
+				err,
+			)
+		}
+
+		commitment :=
+			&digest
+
 		n.commitment =
 			commitment
 
+		// ------------------------------------------------------------
 		// Generate one KZG opening proof for every
 		// evaluation point in this leaf.
 		//
-		// Example:
-		//
-		//     f(0) = m0  -> proof[0]
-		//     f(1) = m1  -> proof[1]
-		//     f(2) = m2  -> proof[2]
-		//
-		// We are NOT verifying pairings yet.
+		// NOTE:
+		// generateLeafOpeningProofs() will next be changed
+		// to use n.evaluationPoints instead of local
+		// positions 0, 1, 2.
+		// ------------------------------------------------------------
+
 		if err :=
 			t.generateLeafOpeningProofs(n); err != nil {
 
@@ -350,6 +445,7 @@ func (t *Tree[K, V]) commitNode(
 		)
 
 	for i, child := range n.children {
+
 		childCommitment, err :=
 			t.commitNode(child)
 
@@ -483,6 +579,8 @@ func (t *Tree[K, V]) commitNode(
 	//     f(2) = m2
 	//
 	// giving a polynomial of degree <= 2.
+	//
+	// INTERNAL NODE EVALUATION POINTS ARE UNCHANGED.
 	// ------------------------------------------------------------
 
 	commitment, err :=
@@ -508,6 +606,7 @@ func (t *Tree[K, V]) commitNode(
 
 	n.commitment =
 		commitment
+
 	if err :=
 		t.generateInternalOpeningProofs(n); err != nil {
 
@@ -516,6 +615,7 @@ func (t *Tree[K, V]) commitNode(
 			err,
 		)
 	}
+
 	if err :=
 		t.verifyInternalOpeningProofs(n); err != nil {
 

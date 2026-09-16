@@ -81,6 +81,18 @@ type node[K any, V any] struct {
 	//
 	// mappedValues[i] corresponds to entries[i].
 	mappedValues []*big.Int
+	// Global evaluation point for each leaf entry.
+	//
+	// For order = 4, every leaf reserves 3 slots:
+	//
+	//   Leaf 0 -> 0, 1, 2
+	//   Leaf 1 -> 3, 4, 5
+	//   Leaf 2 -> 6, 7, 8
+	//   ...
+	//
+	// evaluationPoints[i] corresponds to entries[i]
+	// and mappedValues[i].
+	evaluationPoints []uint64
 
 	// ------------------------------------------------------------
 	// Existing per-leaf SRS
@@ -132,20 +144,20 @@ type node[K any, V any] struct {
 	// one of its child commitments.
 	commitment *kzg.Digest
 	// KZG opening proof for every evaluation stored in this node.
-//
-// If this node contains:
-//
-//     m0, m1, m2
-//
-// then:
-//
-//     openingProofs[0] proves f(0) = m0
-//     openingProofs[1] proves f(1) = m1
-//     openingProofs[2] proves f(2) = m2
+	//
+	// If this node contains:
+	//
+	//     m0, m1, m2
+	//
+	// then:
+	//
+	//     openingProofs[0] proves f(0) = m0
+	//     openingProofs[1] proves f(1) = m1
+	//     openingProofs[2] proves f(2) = m2
 	openingProofs []kzg.OpeningProof
 
-// True ONLY after all KZG opening proofs for this
-// node successfully pass bilinear-pairing verification.
+	// True ONLY after all KZG opening proofs for this
+	// node successfully pass bilinear-pairing verification.
 	pairingsVerified bool
 
 	// ============================================================

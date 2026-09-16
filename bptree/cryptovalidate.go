@@ -14,7 +14,9 @@ import (
 // LEAVES:
 //   - H(key) is correct
 //   - mapped Z_p value is correct
-//   - leaf commitment recomputes correctly
+//   - global evaluation points are present
+//   - leaf commitment recomputes correctly using those
+//     global evaluation points
 //
 // INTERNAL NODES:
 //   - every child commitment matches child.commitment
@@ -27,12 +29,14 @@ import (
 func (t *Tree[K, V]) ValidateCommitments() error {
 
 	if t.root == nil {
+
 		return fmt.Errorf(
 			"cannot validate commitments: tree has no root",
 		)
 	}
 
 	if t.root.commitment == nil {
+
 		return fmt.Errorf(
 			"cannot validate commitments: root commitment has not been built",
 		)
@@ -45,10 +49,12 @@ func (t *Tree[K, V]) ValidateCommitments() error {
 		)
 
 	if err != nil {
+
 		return err
 	}
 
 	if recomputedRoot == nil {
+
 		return fmt.Errorf(
 			"recursive validation returned nil root commitment",
 		)
@@ -77,6 +83,7 @@ func (t *Tree[K, V]) validateCommitmentNode(
 ) (*kzg.Digest, error) {
 
 	if n == nil {
+
 		return nil, fmt.Errorf(
 			"nil node encountered at depth %d",
 			depth,
@@ -84,6 +91,7 @@ func (t *Tree[K, V]) validateCommitmentNode(
 	}
 
 	if n.nodeSRS == nil {
+
 		return nil, fmt.Errorf(
 			"node at depth %d has no node SRS",
 			depth,
@@ -91,6 +99,7 @@ func (t *Tree[K, V]) validateCommitmentNode(
 	}
 
 	if n.commitment == nil {
+
 		return nil, fmt.Errorf(
 			"node at depth %d has no stored commitment",
 			depth,
@@ -104,6 +113,7 @@ func (t *Tree[K, V]) validateCommitmentNode(
 	if n.isLeaf {
 
 		if len(n.entries) == 0 {
+
 			return nil, fmt.Errorf(
 				"empty leaf encountered at depth %d",
 				depth,
@@ -121,12 +131,22 @@ func (t *Tree[K, V]) validateCommitmentNode(
 			)
 		}
 
+		if len(n.evaluationPoints) !=
+			len(n.mappedValues) {
+
+			return nil, fmt.Errorf(
+				"leaf at depth %d has %d mapped values but %d evaluation points",
+				depth,
+				len(n.mappedValues),
+				len(n.evaluationPoints),
+			)
+		}
+
 		// --------------------------------------------------------
 		// Verify each leaf entry independently.
 		// --------------------------------------------------------
 
-		for i, entry :=
-			range n.entries {
+		for i, entry := range n.entries {
 
 			// ----------------------------------------------
 			// Recompute:
@@ -205,13 +225,38 @@ func (t *Tree[K, V]) validateCommitmentNode(
 		}
 
 		// --------------------------------------------------------
-		// Recompute complete leaf polynomial commitment.
+		// Recompute complete leaf polynomial using the SAME
+		// GLOBAL evaluation points used during commitment
+		// construction.
+		//
+		// Example for order = 4:
+		//
+		//   Leaf 0 -> 0, 1
+		//   Leaf 1 -> 3, 4
+		//   Leaf 2 -> 6, 7
+		//   ...
 		// --------------------------------------------------------
 
-		recomputed, err :=
-			t.commitFieldValues(
+		coefficients, err :=
+			interpolateAtPoints(
+				n.evaluationPoints,
 				n.mappedValues,
-				n.nodeSRS,
+				t.modulus,
+			)
+
+		if err != nil {
+
+			return nil, fmt.Errorf(
+				"failed to recompute leaf polynomial at depth %d: %w",
+				depth,
+				err,
+			)
+		}
+
+		digest, err :=
+			kzg.Commit(
+				coefficients,
+				n.nodeSRS.Pk,
 			)
 
 		if err != nil {
@@ -222,6 +267,9 @@ func (t *Tree[K, V]) validateCommitmentNode(
 				err,
 			)
 		}
+
+		recomputed :=
+			&digest
 
 		if !n.commitment.Equal(
 			recomputed,
@@ -301,8 +349,7 @@ func (t *Tree[K, V]) validateCommitmentNode(
 	// Recursively validate every child.
 	// ============================================================
 
-	for i, child :=
-		range n.children {
+	for i, child := range n.children {
 
 		if child == nil {
 
@@ -374,8 +421,7 @@ func (t *Tree[K, V]) validateCommitmentNode(
 	// mapping.
 	// ============================================================
 
-	for i, key :=
-		range n.keys {
+	for i, key := range n.keys {
 
 		// --------------------------------------------------------
 		// Pointer interpretation:
@@ -499,21 +545,15 @@ func (t *Tree[K, V]) validateCommitmentNode(
 	//
 	// Recompute this node's polynomial commitment.
 	//
-	// Example:
+	// IMPORTANT:
 	//
-	// 3 keys
+	// Internal-node behavior is UNCHANGED.
 	//
-	//     m0
-	//     m1
-	//     m2
+	// Internal-node mapped values are still interpolated at:
 	//
-	// ->
+	//     0, 1, 2, ...
 	//
-	// degree <= 2 polynomial
-	//
-	// ->
-	//
-	// one node commitment
+	// using commitFieldValues().
 	// ============================================================
 
 	recomputed, err :=

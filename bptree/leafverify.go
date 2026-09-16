@@ -10,17 +10,28 @@ import (
 // verifyLeafOpeningProofs verifies every KZG opening proof
 // generated for one leaf.
 //
+// Each proof is verified at that entry's GLOBAL
+// evaluation point.
+//
+// For order = 4:
+//
+//	Leaf 0 -> 0, 1, 2
+//	Leaf 1 -> 3, 4, 5
+//	Leaf 2 -> 6, 7, 8
+//	...
+//
+// Only occupied slots are used.
+//
 // Each call to kzg.Verify performs the KZG verification,
 // including the bilinear pairing check.
-//
-// The leaf is marked pairingsVerified=true ONLY if
-// every opening proof verifies successfully.
 func (t *Tree[K, V]) verifyLeafOpeningProofs(
 	leaf *node[K, V],
 ) error {
 
 	if leaf == nil {
-		return fmt.Errorf("leaf is nil")
+		return fmt.Errorf(
+			"leaf is nil",
+		)
 	}
 
 	if !leaf.isLeaf {
@@ -51,46 +62,38 @@ func (t *Tree[K, V]) verifyLeafOpeningProofs(
 		)
 	}
 
+	if len(leaf.evaluationPoints) !=
+		len(leaf.openingProofs) {
+
+		return fmt.Errorf(
+			"leaf has %d opening proofs but %d evaluation points",
+			len(leaf.openingProofs),
+			len(leaf.evaluationPoints),
+		)
+	}
+
 	// Until every proof succeeds,
 	// the leaf is considered unverified.
 	leaf.pairingsVerified = false
 
 	for i := range leaf.openingProofs {
 
+		evaluationPoint :=
+			leaf.evaluationPoints[i]
+
 		var point fr.Element
 
 		point.SetUint64(
-			uint64(i),
+			evaluationPoint,
 		)
 
 		proof :=
 			&leaf.openingProofs[i]
-			
-			// 		if n != t.root && i == 0 {
-
-			// 	var one fr.Element
-			// 	one.SetUint64(1)
-
-			// 	proof.ClaimedValue.Add(
-			// 		&proof.ClaimedValue,
-			// 		&one,
-			// 	)
-			// }
-			// 		// if i == 0 {
-
-		// 	var one fr.Element
-		// 	one.SetUint64(1)
-
-		// 	proof.ClaimedValue.Add(
-		// 		&proof.ClaimedValue,
-		// 		&one,
-		// 	)
-		// }
 
 		// ====================================================
 		// KZG verification.
 		//
-		// Conceptually this checks the pairing relation:
+		// Conceptually:
 		//
 		// e(C - yG1, G2)
 		//
@@ -98,9 +101,9 @@ func (t *Tree[K, V]) verifyLeafOpeningProofs(
 		//
 		// e(pi, [tau]G2 - zG2)
 		//
-		// for:
+		// where:
 		//
-		//     z = i
+		//     z = leaf.evaluationPoints[i]
 		//
 		// using THIS LEAF'S verification key.
 		// ====================================================
@@ -114,14 +117,14 @@ func (t *Tree[K, V]) verifyLeafOpeningProofs(
 			); err != nil {
 
 			return fmt.Errorf(
-				"leaf KZG pairing verification failed at evaluation point %d: %w",
-				i,
+				"leaf KZG pairing verification failed at global evaluation point %d: %w",
+				evaluationPoint,
 				err,
 			)
 		}
 	}
 
-	// We get here only if EVERY pairing check passed.
+	// Every pairing check passed.
 	leaf.pairingsVerified = true
 
 	return nil
