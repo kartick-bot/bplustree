@@ -1,0 +1,7 @@
+
+# Generated B+ tree / SNARK artifacts
+artifacts/
+*.snapshot
+
+# Local backup files
+snark/*.before_universal

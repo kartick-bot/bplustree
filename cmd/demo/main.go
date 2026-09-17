@@ -173,6 +173,373 @@ func main() {
 	}
 
 	// ============================================================
+	// TEST ONE COMPLETE MEMBERSHIP PATH
+	// ============================================================
+	//
+	// We select one key that was actually inserted into the tree.
+	//
+	// ExportMembershipPath first performs the NORMAL B+ TREE SEARCH:
+	//
+	//     root -> internal nodes -> leaf
+	//
+	// and then exports the authentication information in:
+	//
+	//     leaf -> internal nodes -> root
+	//
+	// order for the eventual SNARK circuit.
+
+	testKey := insertedKeys[0]
+
+	membershipPath, err :=
+		tree.ExportMembershipPath(testKey)
+
+	if err != nil {
+		panic(
+			fmt.Errorf(
+				"failed to export membership path for key %d: %w",
+				testKey,
+				err,
+			),
+		)
+	}
+
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("B+ TREE MEMBERSHIP PATH TEST")
+	fmt.Println("============================================================")
+	fmt.Printf("Search key = %d\n", testKey)
+	fmt.Println()
+
+	// ============================================================
+	// PRINT ROOT -> LEAF SEARCH
+	// ============================================================
+
+	fmt.Println("ROOT -> LEAF B+ TREE SEARCH")
+	fmt.Println("------------------------------------------------------------")
+
+	// membershipPath.Levels is stored leaf -> root,
+	// so walk it backwards to reconstruct the actual search order.
+
+	for levelIndex :=
+		len(membershipPath.Levels) - 1; levelIndex >= 0; levelIndex-- {
+
+		level :=
+			membershipPath.Levels[levelIndex]
+
+		fmt.Printf(
+			"Internal level %d:\n",
+			len(membershipPath.Levels)-levelIndex,
+		)
+
+		fmt.Printf(
+			"  selected child index = %d\n",
+			level.ChildIndex,
+		)
+
+		fmt.Printf(
+			"  separator index      = %d\n",
+			level.SeparatorIndex,
+		)
+
+		fmt.Printf(
+			"  separator key        = %d\n",
+			level.SeparatorKey,
+		)
+
+		// --------------------------------------------------------
+		// Print the exact B+ tree routing condition.
+		// --------------------------------------------------------
+
+		switch {
+
+		case level.HasLowerBound &&
+			level.HasUpperBound:
+
+			fmt.Printf(
+				"  routing condition    = %d <= %d < %d\n",
+				level.LowerBound,
+				testKey,
+				level.UpperBound,
+			)
+
+		case level.HasLowerBound:
+
+			fmt.Printf(
+				"  routing condition    = %d <= %d\n",
+				level.LowerBound,
+				testKey,
+			)
+
+		case level.HasUpperBound:
+
+			fmt.Printf(
+				"  routing condition    = %d < %d\n",
+				testKey,
+				level.UpperBound,
+			)
+
+		default:
+
+			fmt.Println(
+				"  routing condition    = no separator bound",
+			)
+		}
+
+		fmt.Println()
+	}
+
+	// ============================================================
+	// PRINT REACHED LEAF
+	// ============================================================
+
+	fmt.Println("LEAF REACHED")
+	fmt.Println("------------------------------------------------------------")
+
+	fmt.Printf(
+		"Key                   = %d\n",
+		membershipPath.Key,
+	)
+
+	fmt.Printf(
+		"Leaf entry index      = %d\n",
+		membershipPath.LeafEntryIndex,
+	)
+
+	fmt.Printf(
+		"Global evaluation z   = %d\n",
+		membershipPath.LeafEvaluationPoint,
+	)
+
+	fmt.Printf(
+		"Leaf mapped value     = %s\n",
+		membershipPath.LeafMappedValue.String(),
+	)
+
+	fmt.Printf(
+		"Leaf commitment       = %x\n",
+		membershipPath.LeafCommitment.Bytes(),
+	)
+
+	fmt.Println()
+
+	// ============================================================
+	// PRINT LEAF -> ROOT AUTHENTICATION PATH
+	// ============================================================
+
+	fmt.Println("LEAF -> ROOT AUTHENTICATION PATH")
+	fmt.Println("------------------------------------------------------------")
+
+	fmt.Println("Start with leaf commitment:")
+	fmt.Printf(
+		"  C_leaf = %x\n",
+		membershipPath.LeafCommitment.Bytes(),
+	)
+
+	fmt.Println()
+
+	for levelIndex, level := range membershipPath.Levels {
+
+		fmt.Printf(
+			"Authentication level %d:\n",
+			levelIndex+1,
+		)
+
+		fmt.Printf(
+			"  separator key   = %d\n",
+			level.SeparatorKey,
+		)
+
+		fmt.Printf(
+			"  evaluation z    = %d\n",
+			level.EvaluationPoint,
+		)
+
+		fmt.Printf(
+			"  mapped value    = %s\n",
+			level.MappedValue.String(),
+		)
+
+		fmt.Printf(
+			"  LPC             = %x\n",
+			level.LPC.Bytes(),
+		)
+
+		fmt.Printf(
+			"  RPC             = %x\n",
+			level.RPC.Bytes(),
+		)
+
+		if level.CurrentChildIsLPC {
+
+			fmt.Println(
+				"  current child   = LPC",
+			)
+
+		} else {
+
+			fmt.Println(
+				"  current child   = RPC",
+			)
+		}
+
+		fmt.Printf(
+			"  parent commit   = %x\n",
+			level.ParentCommitment.Bytes(),
+		)
+
+		fmt.Println()
+	}
+
+	// ============================================================
+	// FINAL ROOT CHECK
+	// ============================================================
+
+	fmt.Println("PUBLIC ROOT")
+	fmt.Println("------------------------------------------------------------")
+
+	fmt.Printf(
+		"Root commitment = %x\n",
+		membershipPath.RootCommitment.Bytes(),
+	)
+
+	fmt.Println()
+
+	fmt.Printf(
+		"Membership path contains %d internal authentication levels\n",
+		len(membershipPath.Levels),
+	)
+
+	fmt.Printf(
+		"Total KZG verifications required for key %d = %d\n",
+		testKey,
+		1+len(membershipPath.Levels),
+	)
+
+	fmt.Println()
+
+	fmt.Println(
+		"MEMBERSHIP PATH EXPORT PASSED",
+	)
+
+	fmt.Println()
+
+	// ============================================================
+	// EXPORT REAL TREE DATA FOR SNARK
+	// ============================================================
+
+	snarkData, err := tree.ExportSNARKData()
+	if err != nil {
+		panic(
+			fmt.Errorf(
+				"failed to export B+ tree for SNARK: %w",
+				err,
+			),
+		)
+	}
+
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Println("SNARK TREE EXPORT")
+	fmt.Println("============================================================")
+
+	fmt.Printf("Tree order       = %d\n", snarkData.Order)
+	fmt.Printf("Number of nodes  = %d\n", len(snarkData.Nodes))
+	fmt.Printf("Root node index  = %d\n", snarkData.RootIndex)
+
+	fmt.Println()
+	fmt.Println("Nodes are exported in post-order:")
+	fmt.Println("children -> parents -> root")
+	fmt.Println()
+
+	for nodeIndex, node := range snarkData.Nodes {
+
+		nodeType := "INTERNAL"
+
+		if node.IsLeaf {
+			nodeType = "LEAF"
+		}
+
+		if node.IsRoot {
+			nodeType = "ROOT"
+		}
+
+		fmt.Println("------------------------------------------------------------")
+		fmt.Printf("SNARK NODE %d [%s]\n", nodeIndex, nodeType)
+		fmt.Println("------------------------------------------------------------")
+
+		fmt.Printf(
+			"Mapped values      = %d\n",
+			len(node.MappedValues),
+		)
+
+		fmt.Printf(
+			"Evaluation points  = %v\n",
+			node.EvaluationPoints,
+		)
+
+		fmt.Printf(
+			"Opening proofs     = %d\n",
+			len(node.OpeningProofs),
+		)
+
+		if node.IsLeaf {
+
+			fmt.Printf(
+				"Leaf entries       = %d\n",
+				len(node.Entries),
+			)
+
+		} else {
+
+			fmt.Printf(
+				"Separator keys     = %v\n",
+				node.Keys,
+			)
+
+			fmt.Printf(
+				"Child indices      = %v\n",
+				node.ChildIndices,
+			)
+
+			fmt.Printf(
+				"Child commitments  = %d\n",
+				len(node.ChildCommitments),
+			)
+		}
+
+		fmt.Println()
+
+		for i, value := range node.MappedValues {
+
+			fmt.Printf(
+				"  evaluation %d: z = %d, value = %s\n",
+				i,
+				node.EvaluationPoints[i],
+				value.String(),
+			)
+		}
+
+		fmt.Println()
+	}
+
+	fmt.Println("------------------------------------------------------------")
+	fmt.Println("ROOT")
+	fmt.Println("------------------------------------------------------------")
+
+	fmt.Printf(
+		"Root index      = %d\n",
+		snarkData.RootIndex,
+	)
+
+	fmt.Printf(
+		"Root commitment = %v\n",
+		snarkData.RootCommitment,
+	)
+
+	fmt.Println()
+	fmt.Println("SNARK tree export PASSED")
+
+	// ============================================================
 	// LEAF DETAILS
 	// ============================================================
 

@@ -11,24 +11,129 @@ import (
 )
 
 // ============================================================
-// BUILD REAL MEMBERSHIP CIRCUIT WITNESS
+// CONVERT ONE NATIVE SEPARATOR RELATION
+// ============================================================
+
+func fillMembershipRelation(
+	dst *MembershipSeparatorCircuit,
+	src *bptree.MembershipSeparatorProof[int],
+	levelIndex int,
+) error {
+
+	if src == nil {
+		return fmt.Errorf(
+			"level %d relation is nil",
+			levelIndex,
+		)
+	}
+
+	if src.MappedValue == nil {
+		return fmt.Errorf(
+			"level %d mapped value is nil",
+			levelIndex,
+		)
+	}
+
+	dst.SeparatorKey =
+		src.SeparatorKey
+
+	dst.EvaluationPoint =
+		src.EvaluationPoint
+
+	dst.MappedValue =
+		emulated.ValueOf[sw_bn254.ScalarField](
+			src.MappedValue,
+		)
+
+	// ========================================================
+	// LPC
+	// ========================================================
+
+	lpc, err :=
+		stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
+			src.LPC,
+		)
+
+	if err != nil {
+		return fmt.Errorf(
+			"level %d LPC: %w",
+			levelIndex,
+			err,
+		)
+	}
+
+	dst.LPC =
+		lpc
+
+	// ========================================================
+	// RPC
+	// ========================================================
+
+	rpc, err :=
+		stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
+			src.RPC,
+		)
+
+	if err != nil {
+		return fmt.Errorf(
+			"level %d RPC: %w",
+			levelIndex,
+			err,
+		)
+	}
+
+	dst.RPC =
+		rpc
+
+	// ========================================================
+	// OPENING PROOF
+	// ========================================================
+
+	openingProof, err :=
+		stdkzg.ValueOfOpeningProof[
+			sw_bn254.ScalarField,
+			sw_bn254.G1Affine,
+		](
+			src.OpeningProof,
+		)
+
+	if err != nil {
+		return fmt.Errorf(
+			"level %d opening proof: %w",
+			levelIndex,
+			err,
+		)
+	}
+
+	dst.OpeningProof =
+		openingProof
+
+	return nil
+}
+
+// ============================================================
+// BUILD WITNESS FOR ANY KEY
 // ============================================================
 //
-// MembershipPathData already contains the real:
+// IMPORTANT:
 //
-//   - search key
-//   - leaf commitment
-//   - leaf mapped value
-//   - leaf opening
-//   - leaf verification key
-//   - internal separator relations
-//   - internal commitments
-//   - internal openings
-//   - internal verification keys
-//   - root commitment
+// The resulting witness may differ for every key.
 //
-// This function converts those native gnark-crypto objects into
-// values usable by the gnark circuit.
+// The circuit does NOT.
+//
+// For every internal level:
+//
+//	LowerRelation:
+//	    IsLPC = 0
+//	    use the lower separator
+//	    current child = RPC
+//
+//	UpperRelation:
+//	    IsLPC = 1
+//	    use the upper separator
+//	    current child = LPC
+//
+// Exactly ONE relation must be present at each level.
 func NewMembershipCircuitWitness(
 	path *bptree.MembershipPathData[int],
 ) (*MembershipCircuit, error) {
@@ -39,9 +144,21 @@ func NewMembershipCircuitWitness(
 		)
 	}
 
-	// ============================================================
+	if len(path.Levels) == 0 {
+		return nil, fmt.Errorf(
+			"membership path has no internal levels",
+		)
+	}
+
+	if path.LeafMappedValue == nil {
+		return nil, fmt.Errorf(
+			"leaf mapped value is nil",
+		)
+	}
+
+	// ========================================================
 	// ROOT COMMITMENT
-	// ============================================================
+	// ========================================================
 
 	rootCommitment, err :=
 		stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
@@ -55,9 +172,9 @@ func NewMembershipCircuitWitness(
 		)
 	}
 
-	// ============================================================
+	// ========================================================
 	// LEAF COMMITMENT
-	// ============================================================
+	// ========================================================
 
 	leafCommitment, err :=
 		stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
@@ -71,9 +188,9 @@ func NewMembershipCircuitWitness(
 		)
 	}
 
-	// ============================================================
-	// LEAF OPENING PROOF
-	// ============================================================
+	// ========================================================
+	// LEAF OPENING
+	// ========================================================
 
 	leafOpeningProof, err :=
 		stdkzg.ValueOfOpeningProof[
@@ -90,9 +207,9 @@ func NewMembershipCircuitWitness(
 		)
 	}
 
-	// ============================================================
-	// LEAF KZG VERIFICATION KEY
-	// ============================================================
+	// ========================================================
+	// LEAF VERIFICATION KEY
+	// ========================================================
 
 	leafVK, err :=
 		stdkzg.ValueOfVerifyingKey[
@@ -109,25 +226,16 @@ func NewMembershipCircuitWitness(
 		)
 	}
 
-	// ============================================================
+	// ========================================================
 	// CREATE ASSIGNMENT
-	// ============================================================
+	// ========================================================
 
 	assignment :=
 		&MembershipCircuit{
-			// ----------------------------------------------------
-			// PUBLIC INPUTS
-			// ----------------------------------------------------
 
 			Key: path.Key,
 
 			RootCommitment: rootCommitment,
-
-			LeafVerifyingKey: leafVK,
-
-			// ----------------------------------------------------
-			// PRIVATE LEAF WITNESS
-			// ----------------------------------------------------
 
 			LeafMappedValue: emulated.ValueOf[sw_bn254.ScalarField](
 				path.LeafMappedValue,
@@ -139,25 +247,17 @@ func NewMembershipCircuitWitness(
 
 			LeafOpeningProof: leafOpeningProof,
 
-			// ----------------------------------------------------
-			// INTERNAL PATH
-			// ----------------------------------------------------
+			LeafVerifyingKey: leafVK,
 
 			Levels: make(
 				[]MembershipLevelCircuit,
 				len(path.Levels),
 			),
-
-			// ----------------------------------------------------
-			// STATIC CIRCUIT STRUCTURE
-			// ----------------------------------------------------
-
-			leafEvaluationPoint: path.LeafEvaluationPoint,
 		}
 
-	// ============================================================
+	// ========================================================
 	// INTERNAL LEVELS
-	// ============================================================
+	// ========================================================
 
 	for levelIndex := range path.Levels {
 
@@ -167,9 +267,9 @@ func NewMembershipCircuitWitness(
 		circuitLevel :=
 			&assignment.Levels[levelIndex]
 
-		// ========================================================
+		// ====================================================
 		// PARENT COMMITMENT
-		// ========================================================
+		// ====================================================
 
 		parentCommitment, err :=
 			stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
@@ -187,9 +287,9 @@ func NewMembershipCircuitWitness(
 		circuitLevel.ParentCommitment =
 			parentCommitment
 
-		// ========================================================
+		// ====================================================
 		// PARENT VERIFICATION KEY
-		// ========================================================
+		// ====================================================
 
 		parentVK, err :=
 			stdkzg.ValueOfVerifyingKey[
@@ -210,265 +310,77 @@ func NewMembershipCircuitWitness(
 		circuitLevel.VerifyingKey =
 			parentVK
 
-		// ========================================================
-		// LOWER RELATION
-		// ========================================================
+		// ====================================================
+		// CHOOSE THE ONE AUTHENTICATED RELATION
+		// ====================================================
 
-		if nativeLevel.LowerRelation != nil {
+		var relation *bptree.MembershipSeparatorProof[int]
 
-			nativeLower :=
+		switch {
+
+		// ----------------------------------------------------
+		// LOWER / RPC
+		// ----------------------------------------------------
+
+		case nativeLevel.LowerRelation != nil &&
+			nativeLevel.UpperRelation == nil:
+
+			circuitLevel.IsLPC =
+				0
+
+			relation =
 				nativeLevel.LowerRelation
 
-			circuitLevel.hasLower =
-				true
+		// ----------------------------------------------------
+		// UPPER / LPC
+		// ----------------------------------------------------
 
-			// ----------------------------------------------------
-			// Separator key
-			// ----------------------------------------------------
+		case nativeLevel.UpperRelation != nil &&
+			nativeLevel.LowerRelation == nil:
 
-			circuitLevel.Lower.SeparatorKey =
-				nativeLower.SeparatorKey
+			circuitLevel.IsLPC =
+				1
 
-			// ----------------------------------------------------
-			// Evaluation point
-			//
-			// EvaluationPoint:
-			//     actual private witness
-			//
-			// evaluationPoint:
-			//     static expected value used by Define()
-			// ----------------------------------------------------
-
-			circuitLevel.Lower.EvaluationPoint =
-				nativeLower.EvaluationPoint
-
-			circuitLevel.Lower.evaluationPoint =
-				nativeLower.EvaluationPoint
-
-			// ----------------------------------------------------
-			// Mapped value
-			// ----------------------------------------------------
-
-			circuitLevel.Lower.MappedValue =
-				emulated.ValueOf[sw_bn254.ScalarField](
-					nativeLower.MappedValue,
-				)
-
-			// ----------------------------------------------------
-			// LEFT CHILD COMMITMENT
-			// ----------------------------------------------------
-
-			lpc, err :=
-				stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
-					nativeLower.LPC,
-				)
-
-			if err != nil {
-				return nil, fmt.Errorf(
-					"level %d lower LPC: %w",
-					levelIndex,
-					err,
-				)
-			}
-
-			circuitLevel.Lower.LPC =
-				lpc
-
-			// ----------------------------------------------------
-			// RIGHT CHILD COMMITMENT
-			// ----------------------------------------------------
-
-			rpc, err :=
-				stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
-					nativeLower.RPC,
-				)
-
-			if err != nil {
-				return nil, fmt.Errorf(
-					"level %d lower RPC: %w",
-					levelIndex,
-					err,
-				)
-			}
-
-			circuitLevel.Lower.RPC =
-				rpc
-
-			// ----------------------------------------------------
-			// KZG OPENING PROOF
-			// ----------------------------------------------------
-
-			openingProof, err :=
-				stdkzg.ValueOfOpeningProof[
-					sw_bn254.ScalarField,
-					sw_bn254.G1Affine,
-				](
-					nativeLower.OpeningProof,
-				)
-
-			if err != nil {
-				return nil, fmt.Errorf(
-					"level %d lower opening proof: %w",
-					levelIndex,
-					err,
-				)
-			}
-
-			circuitLevel.Lower.OpeningProof =
-				openingProof
-		}
-
-		// ========================================================
-		// UPPER RELATION
-		// ========================================================
-
-		if nativeLevel.UpperRelation != nil {
-
-			nativeUpper :=
+			relation =
 				nativeLevel.UpperRelation
 
-			circuitLevel.hasUpper =
-				true
+		// ----------------------------------------------------
+		// INVALID: NONE
+		// ----------------------------------------------------
 
-			// ----------------------------------------------------
-			// Separator key
-			// ----------------------------------------------------
-
-			circuitLevel.Upper.SeparatorKey =
-				nativeUpper.SeparatorKey
-
-			// ----------------------------------------------------
-			// Evaluation point
-			// ----------------------------------------------------
-
-			circuitLevel.Upper.EvaluationPoint =
-				nativeUpper.EvaluationPoint
-
-			circuitLevel.Upper.evaluationPoint =
-				nativeUpper.EvaluationPoint
-
-			// ----------------------------------------------------
-			// Mapped value
-			// ----------------------------------------------------
-
-			circuitLevel.Upper.MappedValue =
-				emulated.ValueOf[sw_bn254.ScalarField](
-					nativeUpper.MappedValue,
-				)
-
-			// ----------------------------------------------------
-			// LEFT CHILD COMMITMENT
-			// ----------------------------------------------------
-
-			lpc, err :=
-				stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
-					nativeUpper.LPC,
-				)
-
-			if err != nil {
-				return nil, fmt.Errorf(
-					"level %d upper LPC: %w",
-					levelIndex,
-					err,
-				)
-			}
-
-			circuitLevel.Upper.LPC =
-				lpc
-
-			// ----------------------------------------------------
-			// RIGHT CHILD COMMITMENT
-			// ----------------------------------------------------
-
-			rpc, err :=
-				stdkzg.ValueOfCommitment[sw_bn254.G1Affine](
-					nativeUpper.RPC,
-				)
-
-			if err != nil {
-				return nil, fmt.Errorf(
-					"level %d upper RPC: %w",
-					levelIndex,
-					err,
-				)
-			}
-
-			circuitLevel.Upper.RPC =
-				rpc
-
-			// ----------------------------------------------------
-			// KZG OPENING PROOF
-			// ----------------------------------------------------
-
-			openingProof, err :=
-				stdkzg.ValueOfOpeningProof[
-					sw_bn254.ScalarField,
-					sw_bn254.G1Affine,
-				](
-					nativeUpper.OpeningProof,
-				)
-
-			if err != nil {
-				return nil, fmt.Errorf(
-					"level %d upper opening proof: %w",
-					levelIndex,
-					err,
-				)
-			}
-
-			circuitLevel.Upper.OpeningProof =
-				openingProof
-		}
-
-		// ========================================================
-		// FILL INACTIVE RELATION WITH DUMMY WITNESS DATA
-		// ========================================================
-		//
-		// MembershipLevelCircuit always physically contains BOTH:
-		//
-		//     Lower MembershipSeparatorCircuit
-		//     Upper MembershipSeparatorCircuit
-		//
-		// even though only one of them may participate in the
-		// circuit for an edge child.
-		//
-		// frontend.NewWitness() still walks every exported field in
-		// both structs. Therefore an inactive relation cannot contain
-		// nil frontend.Variable / emulated values.
-		//
-		// The inactive relation is NOT constrained in Define() because
-		// hasLower / hasUpper are compile-time booleans.
-		//
-		// Therefore we safely populate the inactive relation by copying
-		// the active relation.
-		//
-		// This changes no circuit semantics.
-
-		if !circuitLevel.hasLower &&
-			circuitLevel.hasUpper {
-
-			circuitLevel.Lower =
-				circuitLevel.Upper
-		}
-
-		if !circuitLevel.hasUpper &&
-			circuitLevel.hasLower {
-
-			circuitLevel.Upper =
-				circuitLevel.Lower
-		}
-
-		// ========================================================
-		// SANITY CHECK
-		// ========================================================
-
-		if !circuitLevel.hasLower &&
-			!circuitLevel.hasUpper {
+		case nativeLevel.LowerRelation == nil &&
+			nativeLevel.UpperRelation == nil:
 
 			return nil, fmt.Errorf(
-				"level %d has neither lower nor upper relation",
+				"level %d has no separator relation",
 				levelIndex,
 			)
+
+		// ----------------------------------------------------
+		// INVALID: BOTH
+		// ----------------------------------------------------
+
+		default:
+
+			return nil, fmt.Errorf(
+				"level %d has both lower and upper relations; universal one-opening circuit requires exactly one",
+				levelIndex,
+			)
+		}
+
+		// ====================================================
+		// COPY THE SELECTED RELATION INTO THE SINGLE CIRCUIT
+		// SLOT
+		// ====================================================
+
+		if err :=
+			fillMembershipRelation(
+				&circuitLevel.Relation,
+				relation,
+				levelIndex,
+			); err != nil {
+
+			return nil, err
 		}
 	}
 

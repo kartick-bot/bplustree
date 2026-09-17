@@ -13,232 +13,142 @@ import (
 )
 
 // ============================================================
-// ONE AUTHENTICATED INTERNAL SEPARATOR
+// ONE AUTHENTICATED SEPARATOR
 // ============================================================
 //
-// Native meaning:
+// Every internal level now contains EXACTLY ONE separator
+// relation and EXACTLY ONE KZG opening.
 //
-//	LPC ---- separatorKey ---- RPC
+// Which side is followed is determined by MembershipLevelCircuit.IsLPC:
 //
-// The parent polynomial contains:
+//	IsLPC = 1:
+//	    Key < SeparatorKey
+//	    current child = LPC
 //
-//	mappedValue =
-//	    H(
-//	        "BPLUS-INTERNAL-ENTRY"
-//	        || separatorKey
-//	        || LPC
-//	        || RPC
-//	    )
+//	IsLPC = 0:
+//	    SeparatorKey <= Key
+//	    current child = RPC
 //
-// at evaluationPoint.
-//
-// CURRENT CIRCUIT MILESTONE:
-//
-// We enforce:
-//
-//	mappedValue == KZG claimed value
-//
-// but we DO NOT YET recompute the SHA-256 mapping inside
-// the circuit.
-//
-// That will be added after the KZG membership path works.
+// Therefore the circuit shape does NOT depend on which key is queried.
 type MembershipSeparatorCircuit struct {
-	// Separator key used in the B+ tree routing condition.
 	SeparatorKey frontend.Variable
 
-	// Private witness containing the KZG evaluation point.
-	//
-	// This value is constrained inside Define() to equal the
-	// compile-time evaluationPoint below.
+	// This is a real witness variable.
+	// It is NOT compiled into the circuit anymore.
 	EvaluationPoint frontend.Variable
 
-	// Left child commitment.
 	LPC stdkzg.Commitment[sw_bn254.G1Affine]
-
-	// Right child commitment.
 	RPC stdkzg.Commitment[sw_bn254.G1Affine]
 
-	// Value stored in the parent polynomial at evaluationPoint.
 	MappedValue emulated.Element[sw_bn254.ScalarField]
 
-	// KZG opening proof for the parent polynomial.
 	OpeningProof stdkzg.OpeningProof[
 		sw_bn254.ScalarField,
 		sw_bn254.G1Affine,
 	]
-
-	// Expected evaluation point.
-	//
-	// Compile-time circuit structure.
-	//
-	// NOT part of the SNARK witness.
-	evaluationPoint uint64
 }
 
 // ============================================================
-// ONE INTERNAL B+ TREE LEVEL
+// ONE INTERNAL LEVEL
 // ============================================================
 
 type MembershipLevelCircuit struct {
-	// Commitment of this parent node.
 	ParentCommitment stdkzg.Commitment[sw_bn254.G1Affine]
 
-	// Each B+ tree node currently has an independently generated
-	// KZG SRS.
-	//
-	// Therefore its KZG verification key must also be
-	// authenticated.
-	//
-	// For the current prototype we expose it as PUBLIC input.
 	VerifyingKey stdkzg.VerifyingKey[
 		sw_bn254.G1Affine,
 		sw_bn254.G2Affine,
 	] `gnark:",public"`
 
-	// ------------------------------------------------------------
-	// LOWER RELATION
-	// ------------------------------------------------------------
-	//
-	// Exists when:
-	//
-	//	childIndex > 0
-	//
-	// It proves:
-	//
-	//	lowerSeparator <= Key
-	//
-	// and:
-	//
-	//	currentCommitment == lower.RPC
-	Lower MembershipSeparatorCircuit
+	// Exactly one relation/opening per level.
+	Relation MembershipSeparatorCircuit
 
-	// ------------------------------------------------------------
-	// UPPER RELATION
-	// ------------------------------------------------------------
+	// Private routing selector:
 	//
-	// Exists when:
+	//     1 -> current child is LPC
+	//     0 -> current child is RPC
 	//
-	//	childIndex < len(parent.keys)
-	//
-	// It proves:
-	//
-	//	Key < upperSeparator
-	//
-	// and:
-	//
-	//	currentCommitment == upper.LPC
-	Upper MembershipSeparatorCircuit
-
-	// Compile-time structure.
-	//
-	// These are not SNARK variables.
-	hasLower bool
-	hasUpper bool
+	// This is a SNARK variable, NOT a Go compile-time boolean.
+	IsLPC frontend.Variable
 }
 
 // ============================================================
-// ONE KEY -> ONE COMPLETE MEMBERSHIP CIRCUIT
+// COMPLETE MEMBERSHIP CIRCUIT
 // ============================================================
-//
-// The circuit authenticates:
-//
-//	    Key
-//	     |
-//	     v
-//	leaf opening
-//	     |
-//	     v
-//	  C_leaf
-//	     |
-//	     v
-//	parent separator opening(s)
-//	     |
-//	     v
-//	C_parent
-//	     |
-//	     v
-//	   ...
-//	     |
-//	     v
-//	  C_root
-//	     |
-//	     v
-//	PUBLIC ROOT
-//
-// One satisfying witness will eventually produce:
-//
-//	ONE PLONK proof for ONE key.
-type MembershipCircuit struct {
-	// ============================================================
-	// PUBLIC INPUTS
-	// ============================================================
 
-	// Key whose membership is being proved.
+type MembershipCircuit struct {
+	// ========================================================
+	// PUBLIC STATEMENT
+	// ========================================================
+
 	Key frontend.Variable `gnark:",public"`
 
-	// Public authenticated B+ tree root.
 	RootCommitment stdkzg.Commitment[sw_bn254.G1Affine] `gnark:",public"`
 
-	// ============================================================
+	// ========================================================
 	// PRIVATE LEAF WITNESS
-	// ============================================================
+	// ========================================================
 
-	// Mapped value stored in the leaf polynomial.
 	LeafMappedValue emulated.Element[sw_bn254.ScalarField]
 
-	// Private witness containing the global leaf slot.
-	//
-	// This is constrained to leafEvaluationPoint.
+	// Different keys can use different leaf slots.
 	LeafEvaluationPoint frontend.Variable
 
-	// Leaf polynomial commitment.
 	LeafCommitment stdkzg.Commitment[sw_bn254.G1Affine]
 
-	// KZG opening proof for the leaf entry.
 	LeafOpeningProof stdkzg.OpeningProof[
 		sw_bn254.ScalarField,
 		sw_bn254.G1Affine,
 	]
 
-	// Current prototype:
-	//
-	// leaf KZG verification key is public.
 	LeafVerifyingKey stdkzg.VerifyingKey[
 		sw_bn254.G1Affine,
 		sw_bn254.G2Affine,
 	] `gnark:",public"`
 
-	// ============================================================
-	// INTERNAL AUTHENTICATION LEVELS
-	// ============================================================
+	// The slice length determines only the tree depth.
 	//
-	// Stored:
-	//
-	//	leaf parent -> ... -> root
+	// For our scale tree this is always 6.
 	Levels []MembershipLevelCircuit
-
-	// ============================================================
-	// COMPILE-TIME CIRCUIT STRUCTURE
-	// ============================================================
-
-	// Exact global leaf evaluation point expected for this
-	// particular membership-path circuit.
-	//
-	// Not a SNARK variable.
-	leafEvaluationPoint uint64
 }
 
 // ============================================================
-// DEFINE CIRCUIT
+// BN254 SCALAR FROM A WITNESS VARIABLE
+// ============================================================
+//
+// Evaluation points are small uint64 values.
+//
+// BN254 Fr is represented using four limbs here, therefore:
+//
+//	[z, 0, 0, 0]
+//
+// is used rather than field.NewElement(z).
+func newBN254ScalarPointFromVariable(
+	field *emulated.Field[sw_bn254.ScalarField],
+	value frontend.Variable,
+) *emulated.Element[sw_bn254.ScalarField] {
+
+	return field.NewElement(
+		[]frontend.Variable{
+			value,
+			0,
+			0,
+			0,
+		},
+	)
+}
+
+// ============================================================
+// DEFINE
 // ============================================================
 
 func (c *MembershipCircuit) Define(
 	api frontend.API,
 ) error {
 
-	// ============================================================
+	// ========================================================
 	// KZG VERIFIER
-	// ============================================================
+	// ========================================================
 
 	kzgVerifier, err :=
 		stdkzg.NewVerifier[
@@ -255,9 +165,9 @@ func (c *MembershipCircuit) Define(
 		)
 	}
 
-	// ============================================================
-	// BN254 CURVE GADGET
-	// ============================================================
+	// ========================================================
+	// BN254 CURVE
+	// ========================================================
 
 	curve, err :=
 		sw_emulated.New[
@@ -275,9 +185,9 @@ func (c *MembershipCircuit) Define(
 		)
 	}
 
-	// ============================================================
+	// ========================================================
 	// BN254 SCALAR FIELD
-	// ============================================================
+	// ========================================================
 
 	scalarField, err :=
 		emulated.NewField[sw_bn254.ScalarField](api)
@@ -289,61 +199,21 @@ func (c *MembershipCircuit) Define(
 		)
 	}
 
-	// ============================================================
-	// 1. VERIFY LEAF OPENING
-	// ============================================================
+	// ========================================================
+	// 1. LEAF OPENING
+	// ========================================================
 
-	// The leaf mapped value exported from the native tree must be
-	// exactly the value authenticated by the KZG opening.
 	scalarField.AssertIsEqual(
 		&c.LeafMappedValue,
 		&c.LeafOpeningProof.ClaimedValue,
 	)
 
-	// ------------------------------------------------------------
-	// Bind leaf evaluation-point witness to its exact global slot.
-	// ------------------------------------------------------------
-
-	api.AssertIsEqual(
-		c.LeafEvaluationPoint,
-		c.leafEvaluationPoint,
-	)
-
-	// ------------------------------------------------------------
-	// Convert evaluation point into an emulated BN254 scalar.
-	//
-	// IMPORTANT:
-	//
-	// BN254 Fr is represented by four limbs in this configuration.
-	//
-	// Supplying only:
-	//
-	//	scalarField.NewElement(c.LeafEvaluationPoint)
-	//
-	// gives gnark one limb and causes:
-	//
-	//	"enforcing width element with inexact number of limbs"
-	//
-	// Therefore we explicitly provide all four limbs.
-	//
-	// Evaluation points in our tree are small uint64 values, so:
-	//
-	//	[z, 0, 0, 0]
-	//
-	// is the correct representation.
-	// ------------------------------------------------------------
-
 	leafPoint :=
-		scalarField.NewElement(
-			[]frontend.Variable{
-				c.LeafEvaluationPoint,
-				0,
-				0,
-				0,
-			},
+		newBN254ScalarPointFromVariable(
+			scalarField,
+			c.LeafEvaluationPoint,
 		)
 
-	// Verify leaf KZG opening.
 	if err :=
 		kzgVerifier.CheckOpeningProof(
 			c.LeafCommitment,
@@ -358,265 +228,182 @@ func (c *MembershipCircuit) Define(
 		)
 	}
 
-	// ============================================================
-	// CURRENT AUTHENTICATED COMMITMENT
-	// ============================================================
-	//
-	// We start at the leaf.
-	//
-	// Each internal level authenticates the current commitment
-	// as one of the parent's children and then promotes the parent
-	// commitment upward.
-
 	currentCommitment :=
 		&c.LeafCommitment.G1El
 
-	// ============================================================
+	// ========================================================
 	// 2. WALK LEAF -> ROOT
-	// ============================================================
+	// ========================================================
 
 	for levelIndex := range c.Levels {
 
 		level :=
 			&c.Levels[levelIndex]
 
-		if !level.hasLower &&
-			!level.hasUpper {
+		relation :=
+			&level.Relation
+
+		// ----------------------------------------------------
+		// ROUTING SELECTOR MUST BE BOOLEAN
+		// ----------------------------------------------------
+
+		api.AssertIsBoolean(
+			level.IsLPC,
+		)
+
+		// ----------------------------------------------------
+		// ONE COMPARISON FOR THIS LEVEL
+		// ----------------------------------------------------
+		//
+		// Cmp(Key, SeparatorKey):
+		//
+		//    -1 : Key < SeparatorKey
+		//     0 : Key == SeparatorKey
+		//     1 : Key > SeparatorKey
+
+		comparison :=
+			api.Cmp(
+				c.Key,
+				relation.SeparatorKey,
+			)
+
+		// ----------------------------------------------------
+		// LPC CASE
+		// ----------------------------------------------------
+		//
+		// If:
+		//
+		//     IsLPC = 1
+		//
+		// require:
+		//
+		//     comparison = -1
+		//
+		// therefore:
+		//
+		//     Key < SeparatorKey
+
+		api.AssertIsEqual(
+			api.Mul(
+				level.IsLPC,
+				api.Add(
+					comparison,
+					1,
+				),
+			),
+			0,
+		)
+
+		// ----------------------------------------------------
+		// RPC CASE
+		// ----------------------------------------------------
+		//
+		// If:
+		//
+		//     IsLPC = 0
+		//
+		// comparison must be either:
+		//
+		//     0 or 1
+		//
+		// i.e.
+		//
+		//     SeparatorKey <= Key
+		//
+		// Since comparison is {-1,0,1},
+		//
+		//     comparison * (comparison - 1) = 0
+		//
+		// accepts exactly {0,1}.
+
+		isRPC :=
+			api.Sub(
+				1,
+				level.IsLPC,
+			)
+
+		rpcComparisonConstraint :=
+			api.Mul(
+				comparison,
+				api.Sub(
+					comparison,
+					1,
+				),
+			)
+
+		api.AssertIsEqual(
+			api.Mul(
+				isRPC,
+				rpcComparisonConstraint,
+			),
+			0,
+		)
+
+		// ----------------------------------------------------
+		// SELECT LPC OR RPC INSIDE THE CIRCUIT
+		// ----------------------------------------------------
+
+		selectedChild :=
+			curve.Select(
+				level.IsLPC,
+				&relation.LPC.G1El,
+				&relation.RPC.G1El,
+			)
+
+		curve.AssertIsEqual(
+			currentCommitment,
+			selectedChild,
+		)
+
+		// ----------------------------------------------------
+		// AUTHENTICATED MAPPED VALUE
+		// ----------------------------------------------------
+
+		scalarField.AssertIsEqual(
+			&relation.MappedValue,
+			&relation.OpeningProof.ClaimedValue,
+		)
+
+		// ----------------------------------------------------
+		// EVALUATION POINT IS NOW WITNESS DATA
+		// ----------------------------------------------------
+
+		relationPoint :=
+			newBN254ScalarPointFromVariable(
+				scalarField,
+				relation.EvaluationPoint,
+			)
+
+		// ----------------------------------------------------
+		// EXACTLY ONE KZG VERIFICATION FOR THIS LEVEL
+		// ----------------------------------------------------
+
+		if err :=
+			kzgVerifier.CheckOpeningProof(
+				level.ParentCommitment,
+				relation.OpeningProof,
+				*relationPoint,
+				level.VerifyingKey,
+			); err != nil {
 
 			return fmt.Errorf(
-				"membership level %d has no authenticated separator relation",
+				"level %d KZG verification failed: %w",
 				levelIndex,
+				err,
 			)
 		}
 
-		// ========================================================
-		// LOWER RELATION
-		// ========================================================
-		//
-		// For:
-		//
-		//	C_i
-		//
-		// where i > 0, the lower separator is:
-		//
-		//	key_{i-1}
-		//
-		// and standard B+ tree search requires:
-		//
-		//	key_{i-1} <= searchKey
-		//
-		// while the currently authenticated child must equal:
-		//
-		//	RPC(key_{i-1})
-
-		if level.hasLower {
-
-			lower :=
-				&level.Lower
-
-			// ----------------------------------------------------
-			// Routing condition:
-			//
-			//	lowerSeparator <= Key
-			// ----------------------------------------------------
-
-			api.AssertIsLessOrEqual(
-				lower.SeparatorKey,
-				c.Key,
-			)
-
-			// ----------------------------------------------------
-			// Current child must be the right child of the
-			// lower separator.
-			// ----------------------------------------------------
-
-			curve.AssertIsEqual(
-				currentCommitment,
-				&lower.RPC.G1El,
-			)
-
-			// ----------------------------------------------------
-			// KZG opening value must equal the exported mapped
-			// value.
-			// ----------------------------------------------------
-
-			scalarField.AssertIsEqual(
-				&lower.MappedValue,
-				&lower.OpeningProof.ClaimedValue,
-			)
-
-			// ----------------------------------------------------
-			// Bind evaluation point.
-			// ----------------------------------------------------
-
-			api.AssertIsEqual(
-				lower.EvaluationPoint,
-				lower.evaluationPoint,
-			)
-
-			// ----------------------------------------------------
-			// Full four-limb BN254-Fr representation.
-			// ----------------------------------------------------
-
-			lowerPoint :=
-				scalarField.NewElement(
-					[]frontend.Variable{
-						lower.EvaluationPoint,
-						0,
-						0,
-						0,
-					},
-				)
-
-			// ----------------------------------------------------
-			// Authenticate this separator entry from the parent
-			// polynomial.
-			// ----------------------------------------------------
-
-			if err :=
-				kzgVerifier.CheckOpeningProof(
-					level.ParentCommitment,
-					lower.OpeningProof,
-					*lowerPoint,
-					level.VerifyingKey,
-				); err != nil {
-
-				return fmt.Errorf(
-					"level %d lower KZG verification failed: %w",
-					levelIndex,
-					err,
-				)
-			}
-		}
-
-		// ========================================================
-		// UPPER RELATION
-		// ========================================================
-		//
-		// For child:
-		//
-		//	C_i
-		//
-		// where i < len(keys), the upper separator is:
-		//
-		//	key_i
-		//
-		// and standard B+ tree search requires:
-		//
-		//	searchKey < key_i
-		//
-		// while the currently authenticated child must equal:
-		//
-		//	LPC(key_i)
-
-		if level.hasUpper {
-
-			upper :=
-				&level.Upper
-
-			// ----------------------------------------------------
-			// Strict routing condition:
-			//
-			//	Key < upperSeparator
-			//
-			// api.Cmp returns:
-			//
-			//	-1 : a < b
-			//	 0 : a == b
-			//	 1 : a > b
-			// ----------------------------------------------------
-
-			comparison :=
-				api.Cmp(
-					c.Key,
-					upper.SeparatorKey,
-				)
-
-			api.AssertIsEqual(
-				comparison,
-				-1,
-			)
-
-			// ----------------------------------------------------
-			// Current child must be the left child of the
-			// upper separator.
-			// ----------------------------------------------------
-
-			curve.AssertIsEqual(
-				currentCommitment,
-				&upper.LPC.G1El,
-			)
-
-			// ----------------------------------------------------
-			// KZG claimed value must equal exported mapped value.
-			// ----------------------------------------------------
-
-			scalarField.AssertIsEqual(
-				&upper.MappedValue,
-				&upper.OpeningProof.ClaimedValue,
-			)
-
-			// ----------------------------------------------------
-			// Bind evaluation point.
-			// ----------------------------------------------------
-
-			api.AssertIsEqual(
-				upper.EvaluationPoint,
-				upper.evaluationPoint,
-			)
-
-			// ----------------------------------------------------
-			// Full four-limb BN254-Fr representation.
-			// ----------------------------------------------------
-
-			upperPoint :=
-				scalarField.NewElement(
-					[]frontend.Variable{
-						upper.EvaluationPoint,
-						0,
-						0,
-						0,
-					},
-				)
-
-			// ----------------------------------------------------
-			// Authenticate separator entry from parent polynomial.
-			// ----------------------------------------------------
-
-			if err :=
-				kzgVerifier.CheckOpeningProof(
-					level.ParentCommitment,
-					upper.OpeningProof,
-					*upperPoint,
-					level.VerifyingKey,
-				); err != nil {
-
-				return fmt.Errorf(
-					"level %d upper KZG verification failed: %w",
-					levelIndex,
-					err,
-				)
-			}
-		}
-
-		// ========================================================
-		// PROMOTE AUTHENTICATED PARENT
-		// ========================================================
-		//
-		// Once the necessary separator relation(s) are verified,
-		// the parent commitment becomes the currently
-		// authenticated commitment.
+		// ----------------------------------------------------
+		// PROMOTE PARENT
+		// ----------------------------------------------------
 
 		currentCommitment =
 			&level.ParentCommitment.G1El
 	}
 
-	// ============================================================
-	// 3. FINAL ROOT BINDING
-	// ============================================================
-	//
-	// The commitment reached after the entire leaf -> root path
-	// must equal the PUBLIC B+ tree root commitment.
+	// ========================================================
+	// 3. ROOT BINDING
+	// ========================================================
 
 	curve.AssertIsEqual(
 		currentCommitment,
@@ -627,17 +414,18 @@ func (c *MembershipCircuit) Define(
 }
 
 // ============================================================
-// BUILD CIRCUIT SHAPE
+// CIRCUIT SHAPE
 // ============================================================
 //
-// This constructs the static shape for one membership path:
+// The shape now depends ONLY on depth.
 //
-//   - number of internal levels
-//   - whether each level has lower/upper relations
+// It no longer copies:
+//
 //   - leaf evaluation point
 //   - internal evaluation points
+//   - lower/upper path choices
 //
-// Witness values are not populated here.
+// from a particular key.
 func NewMembershipCircuitShape(
 	path *bptree.MembershipPathData[int],
 ) (*MembershipCircuit, error) {
@@ -648,63 +436,16 @@ func NewMembershipCircuitShape(
 		)
 	}
 
-	circuit :=
-		&MembershipCircuit{
-			Levels: make(
-				[]MembershipLevelCircuit,
-				len(path.Levels),
-			),
-
-			leafEvaluationPoint: path.LeafEvaluationPoint,
-		}
-
-	// ============================================================
-	// COPY STATIC PATH STRUCTURE
-	// ============================================================
-
-	for levelIndex := range path.Levels {
-
-		nativeLevel :=
-			&path.Levels[levelIndex]
-
-		circuitLevel :=
-			&circuit.Levels[levelIndex]
-
-		// --------------------------------------------------------
-		// LOWER RELATION
-		// --------------------------------------------------------
-
-		if nativeLevel.LowerRelation != nil {
-
-			circuitLevel.hasLower =
-				true
-
-			circuitLevel.Lower.evaluationPoint =
-				nativeLevel.LowerRelation.EvaluationPoint
-		}
-
-		// --------------------------------------------------------
-		// UPPER RELATION
-		// --------------------------------------------------------
-
-		if nativeLevel.UpperRelation != nil {
-
-			circuitLevel.hasUpper =
-				true
-
-			circuitLevel.Upper.evaluationPoint =
-				nativeLevel.UpperRelation.EvaluationPoint
-		}
-
-		if !circuitLevel.hasLower &&
-			!circuitLevel.hasUpper {
-
-			return nil, fmt.Errorf(
-				"membership path level %d has no separator relation",
-				levelIndex,
-			)
-		}
+	if len(path.Levels) == 0 {
+		return nil, fmt.Errorf(
+			"membership path has no internal levels",
+		)
 	}
 
-	return circuit, nil
+	return &MembershipCircuit{
+		Levels: make(
+			[]MembershipLevelCircuit,
+			len(path.Levels),
+		),
+	}, nil
 }
