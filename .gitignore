@@ -1,7 +1,10 @@
-
 # Generated B+ tree / SNARK artifacts
 artifacts/
 *.snapshot
 
 # Local backup files
 snark/*.before_universal
+
+# Debug/output files
+snarkout.txt
+cmd/demo/snarkout.txt
